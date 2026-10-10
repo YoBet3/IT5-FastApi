@@ -1,63 +1,64 @@
-"""Data models used to validate API input and output."""
+"""Database layer: owns the SQLite connection and the table definitions."""
+import sqlite3
+from contextlib import contextmanager
 
-from pydantic import BaseModel, Field
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS members (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL,
+    email       TEXT    NOT NULL UNIQUE,
+    created_at  TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
+CREATE TABLE IF NOT EXISTS books (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    title             TEXT    NOT NULL,
+    author            TEXT    NOT NULL,
+    copies_total      INTEGER NOT NULL CHECK (copies_total >= 0),
+    copies_available  INTEGER NOT NULL CHECK (copies_available >= 0),
+    CHECK (copies_available <= copies_total)
+);
 
-class StudentInput(BaseModel):
-    """Fields students can send when creating or updating a record."""
-
-    name: str = Field(min_length=1)
-    age: int = Field(ge=0)
-
-    @staticmethod
-    def list_students(database_connection):
-        with database_connection() as connection:
-            rows = connection.execute(
-                "SELECT id, name, age FROM students ORDER BY id"
-            ).fetchall()
-        return [rows]
-
-    @staticmethod
-    def create_student(student_input, database_connection):
-        with database_connection() as connection:
-            cursor = connection.execute(
-                "INSERT INTO students (name, age) VALUES (?, ?)",
-                (student_input.name, student_input.age),
-            )
-            row = connection.execute(
-                "SELECT id, name, age FROM students WHERE id = ?", (cursor.lastrowid,)
-            ).fetchone()
-        return row
-
-    @staticmethod
-    def get_student(student_id, database_connection):
-        with database_connection() as connection:
-            row = connection.execute(
-                "SELECT id, name, age FROM students WHERE id = ?", (student_id,)
-            ).fetchone()
-        return row
-
-    @staticmethod
-    def update_student(student_id, student_input, database_connection):
-        with database_connection() as connection:
-            cursor = connection.execute(
-                "UPDATE students SET name = ?, age = ? WHERE id = ?",
-                (student_input.name, student_input.age, student_id),
-            )
-            row = connection.execute(
-                "SELECT id, name, age FROM students WHERE id = ?", (student_id,)
-            ).fetchone()
-        return row
-
-    @staticmethod
-    def delete_student(student_id, database_connection):
-        with database_connection() as connection:
-            cursor = connection.execute(
-                "DELETE FROM students WHERE id = ?", (student_id,)
-            )
+CREATE TABLE IF NOT EXISTS loans (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id      INTEGER NOT NULL,
+    member_id    INTEGER NOT NULL,
+    borrowed_at  TEXT    NOT NULL,
+    due_date     TEXT    NOT NULL,
+    returned_at  TEXT,
+    fine         REAL    NOT NULL DEFAULT 0,
+    FOREIGN KEY (book_id)   REFERENCES books(id),
+    FOREIGN KEY (member_id) REFERENCES members(id)
+);
+"""
 
 
-class Student(StudentInput):
-    """A student record returned by the API."""
+class Database:
+    """Wraps a SQLite file and hands out transactional connections."""
 
-    id: int
+    def __init__(self, path: str = "library.db"):
+        self.path = path
+        self.init_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")  # SQLite ignores FKs unless enabled
+        return conn
+
+    def init_schema(self) -> None:
+        with self.transaction() as conn:
+            conn.executescript(SCHEMA)
+
+    @contextmanager
+    def transaction(self):
+        """Commit if the block succeeds, roll back if anything raises."""
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
